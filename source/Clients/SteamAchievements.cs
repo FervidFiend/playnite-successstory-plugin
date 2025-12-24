@@ -224,7 +224,7 @@ namespace SuccessStory.Clients
                 gameAchievements = GetManual(appId, game);
             }
 
-            if (IsLocal && !gameAchievements.HasAchievements)
+            if (IsLocal)// && !gameAchievements.HasAchievements)
             {
                 if (SteamApi.CurrentAccountInfos.ApiKey.IsNullOrEmpty())
                 {

@@ -168,7 +168,7 @@ namespace SuccessStory.Clients
 
                                 if (dt == DateTime.MinValue)
                                 {
-                                    dt = new DateTime(2000, 0, 0, 0, 0, 0);
+                                    dt = new DateTime(2000, 1, 1, 0, 0, 0);
                                 }
                             }
                             catch (Exception ex)

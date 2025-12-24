@@ -1,75 +1,189 @@
-﻿using Playnite.SDK;
-using Playnite.SDK.Models;
-using Playnite.SDK.Data;
+﻿using CommonPlayniteShared.Common;
 using CommonPluginsShared;
+using CommonPluginsShared.Extensions;
+using CommonPluginsShared.Models;
+using FuzzySharp;
+using Playnite.SDK;
+using Playnite.SDK.Data;
+using Playnite.SDK.Models;
+using SteamKit2.GC.TF2.Internal;
 using SuccessStory.Models;
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
-using CommonPluginsShared.Extensions;
-using CommonPlayniteShared.Common;
-using SteamKit2.GC.TF2.Internal;
-using CommonPluginsShared.Models;
 using System.Threading.Tasks;
 using System.Windows;
 
 namespace SuccessStory.Clients
 {
+    struct XdbfHeader
+    {
+        public UInt32 magic;
+        public UInt32 version;
+        public UInt32 entry_count;
+        public UInt32 entry_used;
+        public UInt32 free_count;
+        public UInt32 free_used;
+    }
+    struct XdbfEntry
+    {
+        public UInt16 section;
+        public UInt64 id;
+        public UInt32 offset;
+        public UInt32 size;
+
+        public byte[] data;
+    }
+
     public class Xbox360Achievements : GenericAchievements
     {
         private readonly IPlayniteAPI _playniteApi;
         private readonly ILogger _logger;
-        private string _xeniaPath;
+        private string _xeniaProfilePath;
         private bool _isInitialized;
+
+        private Dictionary<string, List<string>> xboxTitleIDs = new Dictionary<string, List<string>>();
 
         // Path constants
         private const string SUCCESS_STORY_GUID = "cebe6d32-8c46-4459-b993-5a5189d60788";
         private readonly string _playniteAppData;
 
-        // The four main paths we'll use
-        private string _xeniaLogFilePath;
-        private string _xeniaAchievementsDir;
+        // The two main paths we'll use
         private string _successStoryDataDir;
-        private string _xeniaJsonTempDir;
+        private string _successStoryXeniaDir;
 
         public Xbox360Achievements() : base("Xbox360")
         {
             _playniteApi = API.Instance;
             _logger = LogManager.GetLogger();
             _isInitialized = false;
-            _xeniaPath = PluginDatabase.PluginSettings.Settings.XeniaInstallationFolder;
+            _xeniaProfilePath = PluginDatabase.PluginSettings.Settings.XeniaProfileFolder;
             _playniteAppData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
             InitializePaths();
-            _logger.Info($"Xbox360Achievements initialized with Xenia path: {_xeniaPath}");
+            LoadTitleIDs();
+            _logger.Info($"Xbox360Achievements initialized with Xenia path: {_xeniaProfilePath}");
         }
 
-        public Xbox360Achievements(IPlayniteAPI playniteApi, string xeniaPath) : base("Xbox360")
+        public Xbox360Achievements(IPlayniteAPI playniteApi, string xeniaProfilePath) : base("Xbox360")
         {
             _playniteApi = playniteApi;
-            _xeniaPath = xeniaPath;
+            _xeniaProfilePath = xeniaProfilePath;
             _logger = LogManager.GetLogger();
             _isInitialized = false;
             _playniteAppData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
             InitializePaths();
+            LoadTitleIDs();
+            _logger.Info($"Xbox360Achievements initialized with Xenia path: {_xeniaProfilePath}");
         }
 
-        private void InitializePaths()
+        private void LoadTitleIDs()
         {
-            if (string.IsNullOrEmpty(_xeniaPath))
+            try
             {
-                _logger.Error("Xbox360: Xenia path is null or empty");
+                using (StreamReader sr = new StreamReader($"{PluginDatabase.Paths.PluginPath}\\Resources\\Xbox360\\TitleIDs.json"))
+                {
+                    xboxTitleIDs = Serialization.FromJson<Dictionary<string, List<string>>>(sr.ReadToEnd());
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error($"Xbox360: Error loading titleIDs: {ex.Message}");
+                Common.LogError(ex, false, true, PluginDatabase.PluginName);
+            }
+        }
+
+        public void InitializePaths()
+        {
+            if (string.IsNullOrEmpty(_xeniaProfilePath))
+            {
+                _logger.Error("Xbox360: Xenia profile path is null or empty");
                 return;
             }
 
-            string xeniaDir = Path.GetDirectoryName(_xeniaPath);
-            _xeniaLogFilePath = Path.Combine(xeniaDir, "xenia.log");
-            _xeniaAchievementsDir = Path.Combine(xeniaDir, "Achievements".TrimEnd('\\') + '\\');
-            _successStoryDataDir = Directory.Exists(Path.Combine(_playniteAppData, "Playnite", "ExtensionsData", SUCCESS_STORY_GUID, "SuccessStory"))
-                ? Path.Combine(_playniteAppData, "Playnite", "ExtensionsData", SUCCESS_STORY_GUID, "SuccessStory".TrimEnd('\\') + '\\')
-                : Path.Combine(_playniteApi.Paths.ApplicationPath, "ExtensionsData", SUCCESS_STORY_GUID, "SuccessStory".TrimEnd('\\') + '\\');
-            _xeniaJsonTempDir = _xeniaAchievementsDir;
+            // Base paths
+            string baseAppDataDir = Path.Combine(_playniteAppData, "Playnite", "ExtensionsData", SUCCESS_STORY_GUID);
+            string baseAppDir = Path.Combine(_playniteApi.Paths.ApplicationPath, "ExtensionsData", SUCCESS_STORY_GUID);
+
+            // SuccessStory data directory
+            _successStoryDataDir = Directory.Exists(Path.Combine(baseAppDataDir, "SuccessStory"))
+                ? Path.Combine(baseAppDataDir, "SuccessStory") + '\\'
+                : Path.Combine(baseAppDir, "SuccessStory") + '\\';
+
+            // SuccessStory Xenia directory
+            _successStoryXeniaDir = Directory.Exists(Path.Combine(baseAppDataDir, "Xenia"))
+                ? Path.Combine(baseAppDataDir, "Xenia") + '\\'
+                : Path.Combine(baseAppDir, "Xenia") + '\\';
+
+            // Ensure directories exist
+            if (!Directory.Exists(_successStoryDataDir))
+            {
+                Directory.CreateDirectory(_successStoryDataDir);
+                _logger.Debug($"Created directory: {_successStoryDataDir}");
+            }
+
+            if (!Directory.Exists(_successStoryXeniaDir))
+            {
+                Directory.CreateDirectory(_successStoryXeniaDir);
+                _logger.Debug($"Created directory: {_successStoryXeniaDir}");
+            }
+        }
+
+        public string FindAndVerifyTitleID(string gameName)
+        {
+            try
+            {
+                // Normalize input
+                string normalizedGameName = gameName.Trim();
+                Common.LogDebug(true, $"Xbox360: Searching for title ID matching '{normalizedGameName}'");
+
+                // Get all matches with scores
+                var scoredMatches = xboxTitleIDs
+                    .Select(kvp => new
+                    {
+                        Key = kvp.Key,
+                        Value = kvp.Value,
+                        Score = Fuzz.Ratio(kvp.Key.ToLowerInvariant(), normalizedGameName.ToLowerInvariant())
+                    })
+                    .OrderByDescending(x => x.Score) // higher is better
+                    .ToList();
+
+                // Log top matches
+                foreach (var match in scoredMatches.Take(5))
+                {
+                    Common.LogDebug(true, $"Xbox360: Comparing '{normalizedGameName}' to '{match.Key}' => Score: {match.Score}");
+                }
+
+                var bestMatch = scoredMatches.FirstOrDefault();
+
+                if (bestMatch != null && bestMatch.Score >= 85) // tweak threshold if needed
+                {
+                    Common.LogDebug(true, $"Xbox360: Best match is '{bestMatch.Key}' with score {bestMatch.Score}");
+
+                    foreach (var id in bestMatch.Value)
+                    {
+                        string gpdPath = Path.Combine(_xeniaProfilePath, $"{id}.gpd");
+                        if (File.Exists(gpdPath))
+                        {
+                            _logger.Info($"Xbox360: Found GPD file for ID {id}");
+                            return id;
+                        }
+                    }
+
+                    _logger.Error($"Xbox360: {gameName} GPD file not found for best match '{bestMatch.Key}'! (Has the game been launched before?)");
+                    return null;
+                }
+
+                _logger.Error($"Xbox360: No good match found for '{gameName}' in title keys json!");
+                return null;
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, $"Xbox360: Exception while finding title ID for '{gameName}'");
+                return null;
+            }
         }
 
         public override GameAchievements GetAchievements(Game game)
@@ -83,32 +197,28 @@ namespace SuccessStory.Clients
                 return gameAchievements;
             }
 
-            if (!_isInitialized && !string.IsNullOrEmpty(_xeniaPath))
+            //HACK: Added to stop the need to restart playnite for setting change to apply
+            _xeniaProfilePath = PluginDatabase.PluginSettings.Settings.XeniaProfileFolder;
+
+            if (!_isInitialized && !string.IsNullOrEmpty(_xeniaProfilePath))
+            {
+                InitializePaths();
+                _isInitialized = true;
+            }
+
+            string TitleID = FindAndVerifyTitleID(game.Name);
+
+            if (TitleID != null)
             {
                 try
                 {
-                    InitializeXeniaEnvironment(_xeniaPath);
-                    _isInitialized = true;
-
                     if (IsConfigured())
                     {
                         string gameId = game.Id.ToString();
                         if (!string.IsNullOrEmpty(gameId))
                         {
                             string successStoryJsonFile = Path.Combine(_successStoryDataDir, $"{gameId}.json");
-                            string tempJsonFile = Path.Combine(_xeniaJsonTempDir, $"{gameId}.json");
-                            string achievementTextFile = Path.Combine(_xeniaAchievementsDir, $"{gameId}.txt");
-
-                            ProcessAchievementsImproved(gameId, successStoryJsonFile, tempJsonFile, achievementTextFile, game);
-
-                            var oldData = SuccessStory.PluginDatabase.Get(game.Id, true);
-                            gameAchievements = SuccessStory.PluginDatabase.GetDefault(game);
-                            gameAchievements.CopyDiffTo(oldData);
-
-                            SuccessStory.PluginDatabase.Database.OnItemUpdated(
-                                new List<ItemUpdateEvent<GameAchievements>>() {
-                                    new ItemUpdateEvent<GameAchievements>(oldData, gameAchievements)
-                                });
+                            gameAchievements.Items = ProcessAchievementsImproved(TitleID, successStoryJsonFile, game);
 
                             if (API.Instance.MainView.SelectedGames?.FirstOrDefault()?.Id == game.Id)
                             {
@@ -129,25 +239,18 @@ namespace SuccessStory.Clients
             }
 
             gameAchievements.SetRaretyIndicator();
+
             return gameAchievements;
         }
 
-        private List<Achievement> ProcessAchievementsImproved(string gameId, string successStoryJsonFile, string tempJsonFile, string achievementTextFile, Game game)
+        private List<Achievement> ProcessAchievementsImproved(string TitleID, string successStoryJsonFile, Game game)
         {
             var achievements = new List<Achievement>();
 
             try
             {
-                if (File.Exists(successStoryJsonFile))
-                {
-                    achievements = ParseExistingAchievements(successStoryJsonFile);
-                }
-
-                var unlockedAchievements = GetUnlockedAchievements(achievementTextFile);
-                UpdateAchievementUnlockDates(achievements, unlockedAchievements);
+                achievements = LoadGPD($"{_xeniaProfilePath}{TitleID}.gpd", TitleID);
                 SaveAchievementsAtomically(achievements, successStoryJsonFile, game);
-
-                _logger.Info($"Xbox360: Processed {unlockedAchievements.Count} unlocked achievements");
             }
             catch (Exception ex)
             {
@@ -158,108 +261,139 @@ namespace SuccessStory.Clients
             return achievements;
         }
 
-        private Dictionary<string, DateTime> GetUnlockedAchievements(string achievementTextFile)
+        UInt16 GPDFile_ReadUInt16(byte[] data, Int32 index, out Int32 outIndex)
         {
-            var unlockedAchievements = new Dictionary<string, DateTime>();
+            outIndex = index + 2;
+            return BinaryPrimitives.ReverseEndianness(BitConverter.ToUInt16(data, index));
+        }
+        UInt32 GPDFile_ReadUInt32(byte[] data, Int32 index, out Int32 outIndex)
+        {
+            outIndex = index + 4;
+            return BinaryPrimitives.ReverseEndianness(BitConverter.ToUInt32(data, index));
+        }
+        UInt64 GPDFile_ReadUInt64(byte[] data, Int32 index, out Int32 outIndex)
+        {
+            outIndex = index + 8;
+            return BinaryPrimitives.ReverseEndianness(BitConverter.ToUInt64(data, index));
+        }
 
-            if (File.Exists(_xeniaLogFilePath))
+        public List<Achievement> LoadGPD(string path, string TitleID)
+        {
+            byte[] gpdFile = File.ReadAllBytes(path);
+            Int32 index = 0;
+
+            XdbfHeader header;
+            List<XdbfEntry> entries = new List<XdbfEntry>();
+
+            header = new XdbfHeader();
+            header.magic = GPDFile_ReadUInt32(gpdFile, index, out index);
+            header.version = GPDFile_ReadUInt32(gpdFile, index, out index);
+            header.entry_count = GPDFile_ReadUInt32(gpdFile, index, out index);
+            header.entry_used = GPDFile_ReadUInt32(gpdFile, index, out index); 
+            header.free_count = GPDFile_ReadUInt32(gpdFile, index, out index); 
+            header.free_used = GPDFile_ReadUInt32(gpdFile, index, out index);
+
+            //Index to start of data
+            Int32 freeIndex = index + (18 * (Int32)header.free_count);
+            UInt32 dataIndex = (UInt32)freeIndex + (8 * header.free_count);
+
+            //Load Data Entries
+            for (var i = 0; i < header.entry_used; i++)
             {
-                DateTime logTimestamp = File.GetCreationTime(_xeniaLogFilePath);
+                XdbfEntry entry = new XdbfEntry();
+                entry.section = GPDFile_ReadUInt16(gpdFile, index, out index);
+                entry.id = GPDFile_ReadUInt64(gpdFile, index, out index);
+                entry.offset = GPDFile_ReadUInt32(gpdFile, index, out index);
+                entry.size = GPDFile_ReadUInt32(gpdFile, index, out index);
 
-                foreach (var line in File.ReadAllLines(_xeniaLogFilePath))
+                entry.data = new byte[entry.size];
+                Array.Copy(gpdFile, dataIndex + entry.offset, entry.data, 0, entry.size);
+
+                entries.Add(entry);
+            }
+
+            List<Achievement> achievements = new List<Achievement>();
+            Directory.CreateDirectory($"{_playniteApi.Paths.ExtensionsDataPath}\\{SUCCESS_STORY_GUID}\\Xenia\\{TitleID}");
+
+            foreach (var entry in entries)
+            {
+                switch (entry.section)
                 {
-                    if (line.Contains("Achievement unlocked:"))
-                    {
-                        var achievementName = line.Split(new[] { "Achievement unlocked:" }, StringSplitOptions.None)[1]
-                            .Replace("\r", "")
-                            .Replace("i> ", "")
-                            .Trim();
+                    //Achievement Data
+                    case 1:
+                        var localdataIndex = 0;
 
-                        achievementName = Regex.Replace(achievementName, @"i>\s+[A-F0-9]{8}", "");
+                        Achievement achievement = new Achievement();
 
-                        if (!string.IsNullOrEmpty(achievementName))
+                        BinaryPrimitives.ReverseEndianness(BitConverter.ToUInt32(entry.data, localdataIndex));                              localdataIndex += 4; //Magic Number
+                        BinaryPrimitives.ReverseEndianness(BitConverter.ToUInt32(entry.data, localdataIndex));                              localdataIndex += 4; //ID
+
+                        UInt32 imageid = BinaryPrimitives.ReverseEndianness(BitConverter.ToUInt32(entry.data, localdataIndex));             localdataIndex += 4; //ImageID
+                        achievement.UrlUnlocked = $"{_successStoryXeniaDir}\\{TitleID}\\{imageid}.png";
+                        achievement.UrlLocked = $"{PluginDatabase.Paths.PluginPath}\\Resources\\Xbox360\\lock.png";
+
+                        achievement.GamerScore = BinaryPrimitives.ReverseEndianness(BitConverter.ToUInt32(entry.data, localdataIndex));     localdataIndex += 4; //Gamerscore
+                        achievement.Percent = 100 - Math.Min(Math.Max(achievement.GamerScore, 0), 99);
+
+                        BinaryPrimitives.ReverseEndianness(BitConverter.ToUInt32(entry.data, localdataIndex));                              localdataIndex += 4; //Flags
+                        Int64 UnlockTime = (Int64)(BinaryPrimitives.ReverseEndianness(BitConverter.ToUInt64(entry.data, localdataIndex)));  localdataIndex += 8; //Unlock Time
+
+                        string name = "";
+                        while (BitConverter.ToUInt16(entry.data, localdataIndex) != 0)
                         {
-                            unlockedAchievements[achievementName] = logTimestamp;
+                            name += ((char)BinaryPrimitives.ReverseEndianness(BitConverter.ToUInt16(entry.data, localdataIndex))).ToString();
+                            localdataIndex += 2;
+                        }
+                        localdataIndex += 2;
 
-                            if (!File.Exists(achievementTextFile))
+                        achievement.Name = name;
+
+                        while (BitConverter.ToUInt16(entry.data, localdataIndex) != 0)
+                        {
+                            //Description when achievement is unlocked
+                            achievement.Description += ((char)BinaryPrimitives.ReverseEndianness(BitConverter.ToUInt16(entry.data, localdataIndex))).ToString();
+                            localdataIndex += 2;
+                        }
+                        localdataIndex += 2;
+
+                        if (UnlockTime != 0)
+                        {
+                            achievement.DateUnlocked = DateTime.FromFileTime(UnlockTime);
+                        }
+                        else 
+                        {
+                            achievement.Description = null;
+                            while (BitConverter.ToUInt16(entry.data, localdataIndex) != 0)
                             {
-                                string entry = FormatAchievement(achievementName, logTimestamp);
-                                File.WriteAllText(achievementTextFile, entry);
-                            }
-                            else if (!File.ReadAllText(achievementTextFile).Contains($"\"{achievementName}\""))
-                            {
-                                string entry = FormatAchievement(achievementName, logTimestamp);
-                                File.AppendAllText(achievementTextFile, Environment.NewLine + entry);
+                                //Description when achievement is locked
+                                achievement.Description += ((char)BinaryPrimitives.ReverseEndianness(BitConverter.ToUInt16(entry.data, localdataIndex))).ToString();
+                                localdataIndex += 2;
                             }
                         }
-                    }
-                }
-            }
 
-            if (File.Exists(achievementTextFile))
-            {
-                var lines = File.ReadAllLines(achievementTextFile);
-                for (int i = 0; i < lines.Length; i += 2)
-                {
-                    if (i + 1 < lines.Length && lines[i].StartsWith("Unlocked:"))
-                    {
-                        var match = Regex.Match(lines[i + 1].Trim(), @"""([^""]+)""\s+""([^""]+)""");
-                        if (match.Success && DateTime.TryParse(match.Groups[2].Value, out DateTime unlockDate))
+                        achievements.Add(achievement);
+                        break;
+
+                    //Icon Data
+                    case 2:
+                        using (var fs = new FileStream($"{_successStoryXeniaDir}\\{TitleID}\\{entry.id}.png", FileMode.Create, FileAccess.Write))
                         {
-                            string name = match.Groups[1].Value;
-                            if (!unlockedAchievements.ContainsKey(name))
-                            {
-                                unlockedAchievements[name] = unlockDate;
-                            }
+                            fs.Write(entry.data, 0, (Int32)entry.size);
                         }
-                    }
+                        break;
+
+                    default:
+                        break;
                 }
             }
 
-            return unlockedAchievements;
-        }
-
-        private string FormatAchievement(string name, DateTime date)
-        {
-            return $"Unlocked:\r\n\"{name}\" \"{date.ToString("yyyy-MM-ddTHH:mm:ss")}\"";
-        }
-
-        private List<Achievement> ParseExistingAchievements(string jsonPath)
-        {
-            try
-            {
-                if (File.Exists(jsonPath))
-                {
-                    string jsonContent = File.ReadAllText(jsonPath);
-                    var gameAchievements = Serialization.FromJson<GameAchievements>(jsonContent);
-                    return gameAchievements.Items ?? new List<Achievement>();
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.Error($"Xbox360: Failed to parse existing achievements: {ex.Message}");
-                Common.LogError(ex, false, true, PluginDatabase.PluginName);
-            }
-            return new List<Achievement>();
-        }
-
-        private void UpdateAchievementUnlockDates(List<Achievement> achievements, Dictionary<string, DateTime> unlockedAchievements)
-        {
-            foreach (var achievement in achievements)
-            {
-                if (unlockedAchievements.ContainsKey(achievement.Name))
-                {
-                    achievement.DateUnlocked = unlockedAchievements[achievement.Name];
-                }
-            }
-
-            achievements.Sort((a, b) => Nullable.Compare(a.DateUnlocked, b.DateUnlocked));
+            return achievements;
         }
 
         private void SaveAchievementsAtomically(List<Achievement> achievements, string finalPath, Game game)
         {
             string gameId = game.Id.ToString();
-            string tempPath = Path.Combine(_xeniaAchievementsDir, $"{gameId}.temp.json");
+            string tempPath = $"{_successStoryXeniaDir}\\{gameId}.temp.json";
 
             try
             {
@@ -325,55 +459,6 @@ namespace SuccessStory.Clients
             }
         }
 
-        public void InitializeXeniaEnvironment(string xeniaPath)
-        {
-            try
-            {
-                _xeniaPath = xeniaPath;
-                InitializePaths();
-
-                if (!Directory.Exists(_xeniaAchievementsDir))
-                {
-                    Directory.CreateDirectory(_xeniaAchievementsDir);
-                }
-
-                string configPath = Path.Combine(Path.GetDirectoryName(_xeniaPath), "xenia-canary.config.toml");
-                UpdateXeniaConfig(configPath);
-            }
-            catch (Exception ex)
-            {
-                _logger.Error($"Xbox360: Failed to initialize environment: {ex.Message}");
-                throw;
-            }
-        }
-
-        private void UpdateXeniaConfig(string configPath)
-        {
-            try
-            {
-                if (!File.Exists(configPath))
-                {
-                    File.WriteAllText(configPath, "show_achievement_notification = true\n");
-                    return;
-                }
-
-                var configLines = File.ReadAllLines(configPath).ToList();
-                bool hasAchievementSetting = configLines.Any(l => l.TrimStart().StartsWith("show_achievement_notification"));
-
-                if (!hasAchievementSetting)
-                {
-                    configLines.Add("show_achievement_notification = true");
-                    File.WriteAllLines(configPath, configLines);
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.Error($"Xbox360: Failed to update Xenia config: {ex.Message}");
-                Common.LogError(ex, false, true, PluginDatabase.PluginName);
-                throw;
-            }
-        }
-
         public override bool ValidateConfiguration()
         {
             if (CachedConfigurationValidationResult == null)
@@ -395,16 +480,15 @@ namespace SuccessStory.Clients
 
         public override bool IsConfigured()
         {
-            if (string.IsNullOrEmpty(_xeniaPath))
+            if (string.IsNullOrEmpty(_xeniaProfilePath))
             {
                 return false;
             }
 
-            bool hasAchievementsDir = Directory.Exists(_xeniaAchievementsDir);
             bool hasSuccessStoryDir = Directory.Exists(_successStoryDataDir);
-            bool hasConfigFile = File.Exists(Path.Combine(Path.GetDirectoryName(_xeniaPath), "xenia-canary.config.toml"));
-
-            return hasAchievementsDir && hasSuccessStoryDir && hasConfigFile;
+            bool hasSuccessStoryXeniaDir = Directory.Exists(_successStoryXeniaDir);
+            bool hasxboxTitleIDs = (xboxTitleIDs.Count != 0);
+            return hasxboxTitleIDs && hasSuccessStoryDir && hasSuccessStoryXeniaDir;
         }
 
         public override bool EnabledInSettings()

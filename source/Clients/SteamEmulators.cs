@@ -45,30 +45,30 @@ namespace SuccessStory.Clients
 
         public SteamEmulators(List<Folder> LocalFolders) : base("SteamEmulators")
         {
-			AchievementsDirectories.Add("%PUBLIC%\\Documents\\Steam\\CODEX");
-			AchievementsDirectories.Add("%appdata%\\Steam\\CODEX");
+            AchievementsDirectories.Add("%PUBLIC%\\Documents\\Steam\\CODEX");
+            AchievementsDirectories.Add("%appdata%\\Steam\\CODEX");
 
-			AchievementsDirectories.Add("%PUBLIC%\\Documents\\Steam\\RUNE"); //eFMann    
-			AchievementsDirectories.Add("%appdata%\\Steam\\RUNE");           //eFMann
+            AchievementsDirectories.Add("%PUBLIC%\\Documents\\Steam\\RUNE"); //eFMann    
+            AchievementsDirectories.Add("%appdata%\\Steam\\RUNE");           //eFMann
 
-			AchievementsDirectories.Add("%PUBLIC%\\Documents\\EMPRESS"); //eFMann    
-			AchievementsDirectories.Add("%appdata%\\EMPRESS");           //eFMann
+            AchievementsDirectories.Add("%PUBLIC%\\Documents\\EMPRESS"); //eFMann    
+            AchievementsDirectories.Add("%appdata%\\EMPRESS");           //eFMann
 
-			AchievementsDirectories.Add("%PUBLIC%\\Documents\\OnlineFix"); //eFMann 
+            AchievementsDirectories.Add("%PUBLIC%\\Documents\\OnlineFix"); //eFMann 
 
-			AchievementsDirectories.Add("%DOCUMENTS%\\VALVE");
+            AchievementsDirectories.Add("%DOCUMENTS%\\VALVE");
 
-			AchievementsDirectories.Add("%appdata%\\Goldberg SteamEmu Saves");
-			AchievementsDirectories.Add("%appdata%\\GSE Saves"); //eFMann
+            AchievementsDirectories.Add("%appdata%\\Goldberg SteamEmu Saves");
+            AchievementsDirectories.Add("%appdata%\\GSE Saves"); //eFMann
 
-			AchievementsDirectories.Add("%appdata%\\SmartSteamEmu");
-			AchievementsDirectories.Add("%DOCUMENTS%\\DARKSiDERS");
+            AchievementsDirectories.Add("%appdata%\\SmartSteamEmu");
+            AchievementsDirectories.Add("%DOCUMENTS%\\DARKSiDERS");
 
-			AchievementsDirectories.Add("%ProgramData%\\Steam");
-			AchievementsDirectories.Add("%localappdata%\\SKIDROW");
-			AchievementsDirectories.Add("%DOCUMENTS%\\SKIDROW");
+            AchievementsDirectories.Add("%ProgramData%\\Steam");
+            AchievementsDirectories.Add("%localappdata%\\SKIDROW");
+            AchievementsDirectories.Add("%DOCUMENTS%\\SKIDROW");
 
-			foreach (Folder folder in LocalFolders)
+            foreach (Folder folder in LocalFolders)
             {
                 AchievementsDirectories.Add(folder.FolderPath);
             }
@@ -521,7 +521,7 @@ namespace SuccessStory.Clients
             try
             {
                 #region Get local achievements
-                if (!isManual)
+                //if (!isManual)
                 {
                     // Search data local
                     foreach (string DirAchivements in AchievementsDirectories)
@@ -648,6 +648,7 @@ namespace SuccessStory.Clients
                                 break;
 
                             case "%appdata%\\goldberg steamemu saves":
+                            case "%appdata%\\gse saves":
                                 if (File.Exists(Environment.ExpandEnvironmentVariables(DirAchivements) + $"\\{appId}\\achievements.json"))
                                 {
                                     string Name = string.Empty;
@@ -979,7 +980,7 @@ namespace SuccessStory.Clients
                         }
                     }
 
-                    Common.LogDebug(true, $"{Serialization.ToJson(ReturnAchievements)}");
+                    Common.LogDebug(true, $"SteamEmulatorData Get() - {Serialization.ToJson(ReturnAchievements)}");
 
                     if (ReturnAchievements == new List<Achievement>())
                     {
@@ -998,6 +999,8 @@ namespace SuccessStory.Clients
                     {
                         if (ReturnAchievements[j].ApiName.IsEqual(x.Id))
                         {
+                            Achievement existing = ReturnAchievements[j];
+
                             Achievement temp = new Achievement
                             {
                                 ApiName = x.Id,
@@ -1005,7 +1008,7 @@ namespace SuccessStory.Clients
                                 Description = x.Description,
                                 UrlUnlocked = x.UrlUnlocked,
                                 UrlLocked = x.UrlLocked,
-                                DateUnlocked = x.DateUnlocked,
+                                DateUnlocked = x.DateUnlocked ?? existing.DateUnlocked, // preserve old date
                                 GamerScore = x.GamerScore
                             };
 
