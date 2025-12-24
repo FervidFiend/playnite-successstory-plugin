@@ -97,7 +97,10 @@ namespace SuccessStory.Services
                 GameAchievements gameAchievements = GetDefault(game);
 
                 SuccessStoreGameSelection ViewExtension = new SuccessStoreGameSelection(game);
-                Window windowExtension = PlayniteUiHelper.CreateExtensionWindow(ResourceProvider.GetString("LOCSuccessStory"), ViewExtension);
+                Window windowExtension = PlayniteUiHelper.CreateExtensionWindow(
+                    ResourceProvider.GetString("LOCSuccessStory"),
+                    ViewExtension
+                );
                 _ = windowExtension.ShowDialog();
 
                 if (ViewExtension.GameAchievements != null)
@@ -106,10 +109,32 @@ namespace SuccessStory.Services
                     gameAchievements.IsManual = true;
                 }
 
-                gameAchievements = SetEstimateTimeToUnlock(game, gameAchievements);
-                AddOrUpdate(gameAchievements);
+                // Create snapshot for background computation
+                var snapshot = new GameAchievements
+                {
+                    Id = gameAchievements.Id,
+                    Name = gameAchievements.Name,
+                    Items = gameAchievements.Items.ToList(),
+                    IsManual = true,
+                    SourcesLink = gameAchievements.SourcesLink,
+                    RAgameID = gameAchievements.RAgameID,
+                    CommunicationId = gameAchievements.CommunicationId
+                };
 
-                Common.LogDebug(true, $"GetManual({game.Id}) - gameAchievements: {Serialization.ToJson(gameAchievements)}");
+                // Compute EstimateTime off the UI thread
+                Task.Run(() =>
+                {
+                    snapshot = SetEstimateTimeToUnlock(game, snapshot);
+
+                    // Replace UI-bound instance on the UI thread
+                    Application.Current.Dispatcher.Invoke(() =>
+                    {
+                        AddOrUpdate(snapshot);
+                        Common.LogDebug(true, $"GetManual({game.Id}) - snapshot updated: {Serialization.ToJson(snapshot)}");
+                    });
+                });
+
+                Common.LogDebug(true, $"GetManual({game.Id}) - dialog finished, async computation started");
             }
             catch (Exception ex)
             {
@@ -887,7 +912,7 @@ namespace SuccessStory.Services
                 {
                     webItem = SetEstimateTimeToUnlock(game, webItem);
                 }
-                Update(webItem);
+                AddOrUpdate(webItem);
             }
             else
             {
